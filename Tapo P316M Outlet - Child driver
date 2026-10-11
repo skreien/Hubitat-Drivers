@@ -1,0 +1,30 @@
+metadata {
+    definition(name: "Tapo P316M Outlet", namespace: "codex", author: "OpenAI", component: true) {
+        attribute "driverVersion", "string"
+        capability "Switch"
+        capability "Power Meter"
+        capability "Energy Meter"
+        capability "Voltage Measurement"
+        capability "CurrentMeter"
+        capability "Refresh"
+        capability "Initialize"
+    }
+}
+
+void installed() { updateDriverVersion() }
+void updated() { updateDriverVersion() }
+void on() { parent?.componentOn(this.device) }
+void off() { parent?.componentOff(this.device) }
+void refresh() { parent?.componentRefresh(this.device) }
+void initialize() { updateDriverVersion(); parent?.componentInitialize(this.device) }
+
+private void updateDriverVersion() {
+    sendEvent(name: "driverVersion", value: "1.0.0", displayed: false, isStateChange: true)
+}
+
+void parse(List<Map> events) {
+    events.each { Map evt ->
+        if (evt?.name in ["switch", "power", "energy", "voltage", "amperage"]) sendEvent(evt)
+    }
+}
+
