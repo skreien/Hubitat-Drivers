@@ -1,0 +1,255 @@
+/**
+ * Zooz ZEN17 Universal Relay with two relay and two contact sensor children.
+ * ZEN17 is a Z-Wave device. Relay outputs are child switches at endpoints 1
+ * and 2. S1/S2 are contact sensor children; set parameters 2 and 3 to 7 for
+ * open/close reporting. Device settings 1-27 are exposed below.
+ */
+import groovy.transform.Field
+
+@Field static final String DRIVER_VERSION = "1.2.2"
+@Field static final Map COMMAND_CLASS_VERSIONS = [
+    0x20: 1, // Basic
+    0x25: 1, // Switch Binary
+    0x30: 2, // Sensor Binary
+    0x60: 3, // Multi Channel
+    0x70: 4, // Configuration
+    0x71: 8  // Notification
+]
+
+@Field static final Map<Integer, Map> PARAMETERS = [
+    1:  [title: "On / Off Status After Power Failure", size: 1, options: [0:"0: All relays OFF", 1:"1: Restore last state", 2:"2: All relays ON", 3:"3: R1 restore / R2 ON", 4:"4: R2 restore / R1 ON"]],
+    2:  [title: "Input Type for S1C terminals", size: 1, options: [0:"0: Momentary (for lights only)", 1:"1: Toggle switch (ON/OFF)", 2:"2: Toggle switch (state change)", 3:"3: Garage door momentary", 4:"4: Water sensor", 5:"5: Heat sensor", 6:"6: Motion sensor", 7:"7: Open/close contact sensor", 8:"8: Carbon monoxide sensor", 9:"9: Carbon dioxide sensor", 10:"10: Dry contact switch/sensor", 11:"11: Garage door with wired sensor"]],
+    3:  [title: "Input Type for S2C terminals", size: 1, options: [0:"0: Momentary (for lights only)", 1:"1: Toggle switch (ON/OFF)", 2:"2: Toggle switch (state change)", 3:"3: Garage door momentary", 4:"4: Water sensor", 5:"5: Heat sensor", 6:"6: Motion sensor", 7:"7: Open/close contact sensor", 8:"8: Carbon monoxide sensor", 9:"9: Carbon dioxide sensor", 10:"10: Dry contact switch/sensor", 11:"11: Garage door with wired sensor"]],
+    5:  [title: "LED Indicator Control", size: 1, options: [0:"0: LED on when all relays are off", 1:"1: LED on when any relay is on", 2:"2: Always off", 3:"3: Always on"]],
+    6:  [title: "Auto Turn-Off R1: Time", size: 4, range: "0..65535"],
+    7:  [title: "Auto Turn-On R1: Time", size: 4, range: "0..65535"],
+    8:  [title: "Auto Turn-Off R2: Time", size: 4, range: "0..65535"],
+    9:  [title: "Auto Turn-On R2: Time", size: 4, range: "0..65535"],
+    10: [title: "Input Trigger R1", size: 1, options: [0:"0: No - report input only", 1:"1: Yes - activate relay"]],
+    11: [title: "Input Trigger R2", size: 1, options: [0:"0: No - report input only", 1:"1: Yes - activate relay"]],
+    15: [title: "Auto Turn-Off R1: Units", size: 1, options: [0:"0: Minutes", 1:"1: Seconds", 2:"2: Hours"]],
+    16: [title: "Auto Turn-On R1: Units", size: 1, options: [0:"0: Minutes", 1:"1: Seconds", 2:"2: Hours"]],
+    17: [title: "Auto Turn-Off R2: Units", size: 1, options: [0:"0: Minutes", 1:"1: Seconds", 2:"2: Hours"]],
+    18: [title: "Auto Turn-On R2: Units", size: 1, options: [0:"0: Minutes", 1:"1: Seconds", 2:"2: Hours"]],
+    19: [title: "Reverse Sensor Values on S1C", size: 1, options: [0:"0: Normal (no reversal)", 4:"4: Reverse water sensor", 5:"5: Reverse heat sensor", 6:"6: Reverse motion sensor", 7:"7: Reverse open/close contact sensor", 8:"8: Reverse CO sensor", 9:"9: Reverse CO2 sensor", 10:"10: Reverse dry-contact switch"], minFirmware: 1.10],
+    20: [title: "Reverse Sensor Values on S2C", size: 1, options: [0:"0: Normal (no reversal)", 4:"4: Reverse water sensor", 5:"5: Reverse heat sensor", 6:"6: Reverse motion sensor", 7:"7: Reverse open/close contact sensor", 8:"8: Reverse CO sensor", 9:"9: Reverse CO2 sensor", 10:"10: Reverse dry-contact switch"], minFirmware: 1.10],
+    24: [title: "DC Motor Mode", size: 1, options: [0:"0: Disabled", 1:"1: Enabled"]],
+    25: [title: "Input Trigger Duration S1", size: 1, range: "0..100", description: "1 = 0.1 second; 100 = 10 seconds.", minFirmware: 1.30],
+    26: [title: "Input Trigger Duration S2", size: 1, range: "0..100", description: "1 = 0.1 second; 100 = 10 seconds.", minFirmware: 1.30],
+    27: [title: "Fixed Input Actions", size: 1, options: [0:"0: Disabled", 1:"1: S1 ON R1, S2 OFF R1", 2:"2: S1 ON R2, S2 OFF R2", 3:"3: S1 ON both, S2 OFF both"], minFirmware: 1.30]
+]
+
+metadata {
+    definition(
+        name: "Zooz ZEN17 Relay and Contact Children",
+        namespace: "codex",
+        author: "OpenAI"
+    ) {
+        capability "Actuator"
+        capability "Configuration"
+        capability "Refresh"
+        fingerprint mfr: "027A", prod: "7000", deviceId: "A00A", inClusters: "0x5E,0x25,0x20,0x85,0x8E,0x59,0x55,0x86,0x72,0x5A,0x73,0x70,0x60,0x9F,0x6C,0x7A,0x71,0x30", controllerType: "ZWV"
+    }
+    preferences {
+        input name: "helpInfo", type: "paragraph", title: "ZEN17 input setup", description: "For two open/close sensors, set parameters 2 and 3 to 7 (value 7 = open/close contact sensor mode). If open/closed states are reversed, set parameter 19 and/or 20 to 7 as well (the reversal value must match the input type). Set parameters 10 and 11 to 0 to report S1/S2 input changes only; 0 means the input will not activate its relay. Set either to 1 if that input should also activate its relay. Use relay timer parameters 6/8 and 15/17 to make relay ON commands momentary."
+        PARAMETERS.each { Integer number, Map param ->
+            String settingName = "configParam${number}"
+            String desc = "Parameter #${number}; current device value is populated after Configure/Refresh."
+            if (param.description) desc += " ${param.description}"
+            if (param.options) {
+                Map<String, String> opts = [:]
+                param.options.each { k, v -> opts["${k}"] = "${v}" }
+                input name: settingName, type: "enum", title: param.title, options: opts, required: false, description: desc
+            } else {
+                input name: settingName, type: "number", title: param.title, range: param.range, required: false, description: desc
+            }
+        }
+    }
+}
+
+void installed() {
+    createChildren()
+    state.remove("paramsLoaded")
+    configure()
+}
+
+void updated() {
+    createChildren()
+    configure()
+}
+
+void configure() {
+    createChildren()
+    List<String> cmds = [secure(zwave.multiChannelV3.multiChannelEndPointGet().format())]
+    Map stored = state.configValues ?: [:]
+    PARAMETERS.each { Integer number, Map param ->
+        String settingName = "configParam${number}"
+        Integer requested = safeInt(settings[settingName])
+        Integer current = safeInt(stored["${number}"])
+        log.info "Parameter #${number} (${param.title}): preference=${settings[settingName]}, parsed=${requested}, device=${current}"
+        if (requested != null && current != null && requested != current) {
+            log.info "Setting ${param.title} (#${number}) from ${current} to ${requested}"
+            cmds << secure(zwave.configurationV1.configurationSet(parameterNumber: number, size: param.size, scaledConfigurationValue: requested).format())
+        }
+        cmds << secure(zwave.configurationV1.configurationGet(parameterNumber: number).format())
+    }
+    refreshCommands().each { cmds << it }
+    sendCommands(cmds)
+}
+
+void refresh() {
+    List<String> cmds = []
+    PARAMETERS.each { Integer number, Map param ->
+        cmds << secure(zwave.configurationV1.configurationGet(parameterNumber: number).format())
+    }
+    refreshCommands().each { cmds << it }
+    sendCommands(cmds)
+}
+
+private List<String> refreshCommands() {
+    List<String> cmds = [
+        secure(zwave.switchBinaryV1.switchBinaryGet().format()),
+        secure(endpointCommand(1, zwave.switchBinaryV1.switchBinaryGet())),
+        secure(endpointCommand(2, zwave.switchBinaryV1.switchBinaryGet())),
+        secure(endpointCommand(1, zwave.notificationV3.notificationGet(notificationType: 0xFF, v1AlarmType: 0, event: 0))),
+        secure(endpointCommand(2, zwave.notificationV3.notificationGet(notificationType: 0xFF, v1AlarmType: 0, event: 0))),
+        secure(endpointCommand(1, zwave.sensorBinaryV2.sensorBinaryGet(sensorType: 10))),
+        secure(endpointCommand(2, zwave.sensorBinaryV2.sensorBinaryGet(sensorType: 10)))
+    ]
+    return cmds
+}
+
+void createChildren() {
+    createChild("relay-1", "Generic Component Switch", "Relay 1", "relay1")
+    createChild("relay-2", "Generic Component Switch", "Relay 2", "relay2")
+    createChild("sensor-1", "Generic Component Contact Sensor", "S1 Contact Sensor", "sensor1")
+    createChild("sensor-2", "Generic Component Contact Sensor", "S2 Contact Sensor", "sensor2")
+}
+
+private void createChild(String suffix, String typeName, String childName, String componentName) {
+    String childDni = "${device.deviceNetworkId}-${suffix}"
+    if (!getChildDevice(childDni)) {
+        addChildDevice("hubitat", typeName, childDni, [
+            name: "${device.displayName} ${childName}", label: "${device.displayName} ${childName}",
+            isComponent: true, componentName: componentName, componentLabel: childName
+        ])
+    }
+}
+
+void parse(String description) {
+    if (!description) return
+    def cmd = zwave.parse(description, COMMAND_CLASS_VERSIONS)
+    if (cmd) zwaveEvent(cmd)
+}
+
+void zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
+    def encapsulated = cmd.encapsulatedCommand(COMMAND_CLASS_VERSIONS)
+    if (encapsulated) zwaveEvent(encapsulated, cmd.sourceEndPoint as Integer)
+}
+
+void zwaveEvent(hubitat.zwave.commands.configurationv4.ConfigurationReport cmd) {
+    Integer number = cmd.parameterNumber as Integer
+    Map param = PARAMETERS[number]
+    if (!param) return
+    Long value = cmd.scaledConfigurationValue as Long
+    Long sizeFactor = Math.pow(256, param.size).round()
+    if (value < 0) value += sizeFactor
+    Map values = state.configValues ?: [:]
+    values["${number}"] = value
+    state.configValues = values
+    String type = param.options ? "enum" : "number"
+    device.updateSetting("configParam${number}", [value: (type == "enum" ? "${value}" : value), type: type])
+    log.info "${param.title} (#${number}) = ${value}"
+    if ((number == 2 || number == 3) && value != 7) {
+        log.warn "Input S${number - 1} is set to mode ${value}; choose 7 (open/close contact sensor) for contact reporting."
+    }
+    if (PARAMETERS.keySet().every { values.containsKey("${it}") }) state.paramsLoaded = true
+}
+
+void zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd, Integer ep = 0) {
+    updateRelay(ep, cmd.value ? "on" : "off")
+}
+
+void zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd, Integer ep = 0) {
+    updateRelay(ep, cmd.value ? "on" : "off")
+}
+
+void zwaveEvent(hubitat.zwave.commands.notificationv8.NotificationReport cmd, Integer ep = 0) {
+    log.info "Contact notification: type=${cmd.notificationType}, event=${cmd.event}, endpoint=${ep}"
+    if (cmd.notificationType == 0x06) {
+        if (cmd.event == 0x16) updateContact(ep, "open")
+        else if (cmd.event == 0x17) updateContact(ep, "closed")
+    }
+}
+
+void zwaveEvent(hubitat.zwave.commands.sensorbinaryv2.SensorBinaryReport cmd, Integer ep = 0) {
+    log.info "Sensor Binary report: sensorType=${cmd.sensorType}, value=${cmd.sensorValue}, endpoint=${ep}"
+    if (cmd.sensorType == 10 || cmd.sensorType == 0) {
+        updateContact(ep, cmd.sensorValue ? "open" : "closed")
+    }
+}
+
+void zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelEndPointReport cmd) {
+    log.info "ZEN17 reports ${cmd.endPoints} multi-channel endpoints"
+}
+
+void zwaveEvent(hubitat.zwave.Command cmd, Integer ep = 0) {
+    log.debug "Unhandled Z-Wave command ${cmd} from endpoint ${ep}"
+}
+
+void componentOn(deviceWrapper) {
+    Integer ep = relayEndpoint(deviceWrapper)
+    if (ep) sendCommands([secure(endpointCommand(ep, zwave.switchBinaryV1.switchBinarySet(switchValue: 0xFF)))])
+}
+
+void componentOff(deviceWrapper) {
+    Integer ep = relayEndpoint(deviceWrapper)
+    if (ep) sendCommands([secure(endpointCommand(ep, zwave.switchBinaryV1.switchBinarySet(switchValue: 0x00)))])
+}
+
+void componentRefresh(deviceWrapper) {
+    Integer ep = relayEndpoint(deviceWrapper)
+    if (ep) sendCommands([secure(endpointCommand(ep, zwave.switchBinaryV1.switchBinaryGet()))])
+}
+
+private Integer relayEndpoint(deviceWrapper) {
+    String dni = deviceWrapper?.deviceNetworkId?.toString() ?: ""
+    if (dni.endsWith("-relay-1")) return 1
+    if (dni.endsWith("-relay-2")) return 2
+    return null
+}
+
+private void updateRelay(Integer ep, String value) {
+    if (ep == null || ep < 1 || ep > 2) return
+    getChildDevice("${device.deviceNetworkId}-relay-${ep}")?.sendEvent(name: "switch", value: value, descriptionText: "Relay ${ep} is ${value}")
+}
+
+private void updateContact(Integer ep, String value) {
+    if (ep == null || ep < 1 || ep > 2) {
+        log.warn "Ignoring contact state ${value} from unexpected endpoint ${ep}"
+        return
+    }
+    log.info "S${ep} contact reports ${value}"
+    getChildDevice("${device.deviceNetworkId}-sensor-${ep}")?.sendEvent(name: "contact", value: value, descriptionText: "S${ep} contact is ${value}")
+}
+
+private String endpointCommand(Integer ep, hubitat.zwave.Command command) {
+    return zwave.multiChannelV3.multiChannelCmdEncap(destinationEndPoint: ep).encapsulate(command).format()
+}
+
+private String secure(String command) {
+    return zwaveSecureEncap(command)
+}
+
+private Integer safeInt(value) {
+    try {
+        if (value == null) return null
+        def match = value.toString() =~ /^\s*(-?\d+)/
+        return match.find() ? match.group(1).toInteger() : null
+    }
+    catch (Exception ignored) { return null }
+}
+
+private void sendCommands(List<String> commands) {
+    if (commands) sendHubCommand(new hubitat.device.HubMultiAction(delayBetween(commands, 300), hubitat.device.Protocol.ZWAVE))
+}
