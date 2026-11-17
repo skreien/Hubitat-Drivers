@@ -50,7 +50,7 @@ void logsOff() {
 }
 
 void discover() {
-    sendEvent(name: "driverVersion", value: "1.0.2", displayed: false, isStateChange: true)
+    sendEvent(name: "driverVersion", value: "1.0.3", displayed: false, isStateChange: true)
     List<Integer> eps = detectOutletEndpoints()
     if (!eps) eps = parseEndpointList(settings.endpointList)
     if (!eps) eps = (1..maxOutlets()).toList()
@@ -239,27 +239,22 @@ private void subscribeToReports() {
 }
 
 void establishSubscriptions() {
-    List<Map<String, String>> switchPaths = []
-    List<Map<String, String>> meterPaths = []
+    List<Map<String, String>> paths = []
     List<Integer> outlets = outletEndpoints()
     outlets.each { Integer ep ->
         Integer meterEp = meterEndpointFor(ep, outlets)
-        switchPaths << matter.attributePath(ep, onOffCluster(), 0x0000)
-        meterPaths << matter.attributePath(meterEp, powerCluster(), 0x0008)
-        meterPaths << matter.attributePath(meterEp, powerCluster(), 0x000B)
-        meterPaths << matter.attributePath(meterEp, powerCluster(), 0x000C)
-        meterPaths << matter.attributePath(meterEp, energyCluster(), 0x0001)
+        paths << matter.attributePath(ep, onOffCluster(), 0x0000)
+        paths << matter.attributePath(meterEp, powerCluster(), 0x0008)
+        paths << matter.attributePath(meterEp, powerCluster(), 0x000B)
+        paths << matter.attributePath(meterEp, powerCluster(), 0x000C)
+        paths << matter.attributePath(meterEp, energyCluster(), 0x0001)
     }
-    if (switchPaths) {
-        String switchCommand = matter.subscribe(1, 3600, switchPaths)
-        sendHubCommand(new hubitat.device.HubAction(switchCommand, hubitat.device.Protocol.MATTER))
-    }
-    if (meterPaths) {
-        String meterCommand = matter.subscribe(30, 300, meterPaths)
-        sendHubCommand(new hubitat.device.HubAction(meterCommand, hubitat.device.Protocol.MATTER))
+    if (paths) {
+        String subscribeCommand = matter.subscribe(30, 300, paths)
+        sendHubCommand(new hubitat.device.HubAction(subscribeCommand, hubitat.device.Protocol.MATTER))
     }
     if (logEnable) {
-        log.debug "Subscribed to ${switchPaths.size()} switch attributes and ${meterPaths.size()} metering attributes."
+        log.debug "Subscribed to ${outlets.size()} switch attributes and ${outlets.size() * 4} metering attributes in one Matter subscription."
     }
 }
 
