@@ -19,6 +19,8 @@ metadata {
     }
     preferences {
         input name: "endpointList", type: "string", title: "Outlet Matter endpoints", description: "Comma-separated endpoint IDs. Discover fills this from the device when available.", defaultValue: "1,2,3,4,5,6"
+        input name: "enableScheduledRefresh", type: "bool", title: "Enable scheduled metering refresh", description: "Optional backup polling when Matter reports are delayed. Matter subscriptions continue even when disabled.", defaultValue: false
+        input name: "scheduledRefreshInterval", type: "enum", title: "Scheduled refresh interval", options: ["15": "15 minutes", "30": "30 minutes", "45": "45 minutes", "60": "60 minutes"], defaultValue: "15", required: true
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: false
     }
 }
@@ -48,7 +50,7 @@ void logsOff() {
     device.updateSetting("logEnable", [value: "false", type: "bool"])
 }
 void discover() {
-    sendEvent(name: "driverVersion", value: "1.0.4", displayed: false, isStateChange: true)
+    sendEvent(name: "driverVersion", value: "1.0.6", displayed: false, isStateChange: true)
     List<Integer> eps = detectOutletEndpoints()
     if (!eps) eps = parseEndpointList(settings.endpointList)
     if (!eps) eps = (1..maxOutlets()).toList()
@@ -62,9 +64,46 @@ void discover() {
     syncChildren(eps)
     log.info "${device.displayName}: Discovery finished; Hubitat reports ${getChildDevices().size()} child device(s)."
     subscribeToReports()
-    // Keep child metering fresh even if a Matter subscription stops reporting.
+    configureScheduledRefresh()
+    // Always read current values after discovery/configuration, even when
+    // recurring refresh is disabled. Manual Refresh remains available.
+    refresh()
+}
+
+private Boolean isScheduledRefreshEnabled() {
+    return settings.enableScheduledRefresh in [true, "true"]
+}
+private Integer scheduledRefreshMinutes() {
+    Integer minutes
+    try {
+        minutes = Integer.parseInt(settings.scheduledRefreshInterval?.toString() ?: "15")
+    } catch (Exception ignored) {
+        minutes = 15
+    }
+    return (minutes in [15, 30, 45, 60]) ? minutes : 15
+}
+private void configureScheduledRefresh() {
+    // Remove any 5-minute recurring job created by earlier driver versions,
+    // and cancel a pending one-shot job when settings change or are disabled.
     unschedule("refresh")
-    runEvery5Minutes("refresh")
+    unschedule("scheduledRefresh")
+    if (!isScheduledRefreshEnabled()) {
+        if (logEnable) log.debug "Scheduled metering refresh disabled; Matter subscription remains active."
+        return
+    }
+    Integer minutes = scheduledRefreshMinutes()
+    // A self-rescheduling one-shot job supports a true 45-minute cadence;
+    // cron-style */45 minutes would cause a 15-minute gap each hour.
+    runIn(minutes * 60, "scheduledRefresh", [overwrite: true])
+    log.info "${device.displayName}: Scheduled metering refresh enabled every ${minutes} minutes."
+}
+void scheduledRefresh() {
+    // The guard ensures a queued job cannot refresh after the option is off.
+    if (!isScheduledRefreshEnabled()) return
+    Integer minutes = scheduledRefreshMinutes()
+    // Queue the next run before attempting the read, so a transient failure
+    // does not permanently stop future scheduled refreshes.
+    runIn(minutes * 60, "scheduledRefresh", [overwrite: true])
     refresh()
 }
 private List<Integer> detectOutletEndpoints() {
@@ -109,18 +148,25 @@ private Integer parseClusterId(def value) {
     if (value instanceof Number) return value.intValue()
     String s = value?.toString()?.trim()
     if (!s) return null
-    if (s ==~ /0x[0-9a-fA-F]+/) return Integer.parseInt(s.substring(2), 16)
+    if (s ==~ /(?i)0x[0-9a-f]+/) return Integer.parseInt(s.substring(2), 16)
+    // Hubitat fingerprints use four-character hexadecimal Matter cluster IDs,
+    // including values such as 0090 and 0091 that contain only digits.
+    if (s ==~ /[0-9a-fA-F]{4}/) return Integer.parseInt(s, 16)
     if (s ==~ /[0-9]+/) return Integer.parseInt(s, 10)
     return parseMatterId(s)
 }
 private Integer meterEndpointFor(Integer outletEp, List<Integer> outletEps) {
     List<Integer> meterEps = detectMeterEndpoints()
+    // The observed P316M reports both OnOff and electrical measurements on
+    // endpoints 1-6. Prefer the same endpoint when the fingerprint confirms it.
+    if (meterEps.contains(outletEp)) return outletEp
+    // Accommodate firmware with separately advertised metering endpoints.
     if (meterEps.size() == outletEps.size()) {
         Integer index = outletEps.indexOf(outletEp)
         if (index >= 0) return meterEps[index]
     }
-    // P316M presents outlet switches on endpoints 1-6 and their meters on 7-12.
-    return outletEp + 6
+    // If fingerprint discovery is incomplete, use the observed P316M topology.
+    return outletEp
 }
 private Integer parseEndpoint(def value) {
     if (value == null) return null
@@ -155,9 +201,11 @@ private void syncChildren(List<Integer> endpoints) {
             log.error "${device.displayName}: Child creation returned no device for outlet endpoint ${ep}. Confirm codex:Tapo P316M Outlet is saved in Drivers Code."
             return
         }
+        Integer meterEp = meterEndpointFor(ep, endpoints)
         child.updateDataValue("endpoint", ep.toString())
         child.updateDataValue("outletNumber", (endpoints.indexOf(ep) + 1).toString())
-        child.updateDataValue("meterEndpoint", meterEndpointFor(ep, endpoints).toString())
+        child.updateDataValue("meterEndpoint", meterEp.toString())
+        if (logEnable) log.debug "Outlet ${ep} metering endpoint: ${meterEp}"
         child.sendEvent(name: "driverVersion", value: "1.0.0", displayed: false, isStateChange: true)
     }
     def currentChildren = getChildDevices() ?: []
@@ -191,7 +239,10 @@ private def childByOutletNumber(Integer number) {
     getChildDevices().find { it.getDataValue("outletNumber") == number?.toString() }
 }
 private def childByMeterEndpoint(Integer endpoint) {
-    getChildDevices().find { it.getDataValue("meterEndpoint") == endpoint?.toString() }
+    // Prefer the explicit discovery mapping, but don't discard direct outlet
+    // reports if an older version saved an incorrect metering endpoint.
+    def child = getChildDevices().find { it.getDataValue("meterEndpoint") == endpoint?.toString() }
+    return child ?: getChildDevice("${device.deviceNetworkId}-outlet-${endpoint}")
 }
 
 private List<Integer> outletEndpoints() {
@@ -246,7 +297,12 @@ void parse(String description) {
     if (ep == null || cluster == null || attr == null) return
     boolean isOnOff = cluster == onOffCluster()
     def child = isOnOff ? getChildDevice("${device.deviceNetworkId}-outlet-${ep}") : childByMeterEndpoint(ep)
-    if (!child) return
+    if (!child) {
+        if (logEnable && (cluster == powerCluster() || cluster == energyCluster())) {
+            log.warn "No child for Matter metering report on endpoint ${ep}, cluster ${msg.cluster}"
+        }
+        return
+    }
     def value = msg.value
     if (cluster == onOffCluster() && attr == 0x0000) {
         Boolean onState = truthValue(value)
