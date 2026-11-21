@@ -48,7 +48,7 @@ void logsOff() {
     device.updateSetting("logEnable", [value: "false", type: "bool"])
 }
 void discover() {
-    sendEvent(name: "driverVersion", value: "1.0.3", displayed: false, isStateChange: true)
+    sendEvent(name: "driverVersion", value: "1.0.4", displayed: false, isStateChange: true)
     List<Integer> eps = detectOutletEndpoints()
     if (!eps) eps = parseEndpointList(settings.endpointList)
     if (!eps) eps = (1..maxOutlets()).toList()
