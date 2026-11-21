@@ -22,7 +22,6 @@ metadata {
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: false
     }
 }
-
 private Integer onOffCluster() { 0x0006 }
 private Integer powerCluster() { 0x0090 }
 private Integer energyCluster() { 0x0091 }
@@ -48,7 +47,6 @@ void configure() {
 void logsOff() {
     device.updateSetting("logEnable", [value: "false", type: "bool"])
 }
-
 void discover() {
     sendEvent(name: "driverVersion", value: "1.0.3", displayed: false, isStateChange: true)
     List<Integer> eps = detectOutletEndpoints()
@@ -64,9 +62,11 @@ void discover() {
     syncChildren(eps)
     log.info "${device.displayName}: Discovery finished; Hubitat reports ${getChildDevices().size()} child device(s)."
     subscribeToReports()
+    // Keep child metering fresh even if a Matter subscription stops reporting.
+    unschedule("refresh")
+    runEvery5Minutes("refresh")
     refresh()
 }
-
 private List<Integer> detectOutletEndpoints() {
     def fps = matter.getMatterFingerprints()
     List<Integer> found = []
@@ -88,7 +88,6 @@ private List<Integer> detectOutletEndpoints() {
     if (logEnable) log.debug "Fingerprint endpoint scan found ${found}"
     return found.unique().sort()
 }
-
 private List<Integer> detectMeterEndpoints() {
     def fps = matter.getMatterFingerprints()
     List<Integer> found = []
@@ -106,7 +105,6 @@ private List<Integer> detectMeterEndpoints() {
     }
     return found.unique().sort()
 }
-
 private Integer parseClusterId(def value) {
     if (value instanceof Number) return value.intValue()
     String s = value?.toString()?.trim()
@@ -115,7 +113,6 @@ private Integer parseClusterId(def value) {
     if (s ==~ /[0-9]+/) return Integer.parseInt(s, 10)
     return parseMatterId(s)
 }
-
 private Integer meterEndpointFor(Integer outletEp, List<Integer> outletEps) {
     List<Integer> meterEps = detectMeterEndpoints()
     if (meterEps.size() == outletEps.size()) {
@@ -125,7 +122,6 @@ private Integer meterEndpointFor(Integer outletEp, List<Integer> outletEps) {
     // P316M presents outlet switches on endpoints 1-6 and their meters on 7-12.
     return outletEp + 6
 }
-
 private Integer parseEndpoint(def value) {
     if (value == null) return null
     String s = value.toString().trim()
@@ -134,7 +130,6 @@ private Integer parseEndpoint(def value) {
     if (s ==~ /[0-9]+/) return Integer.parseInt(s, 10)
     return null
 }
-
 private Integer parseMatterId(def value) {
     if (value == null) return null
     if (value instanceof Number) return value.intValue()
@@ -148,7 +143,6 @@ private List<Integer> parseEndpointList(def value) {
     if (!value) return []
     return value.toString().split(/[,;\s]+/).collect { parseEndpoint(it) }.findAll { it != null && it > 0 }
 }
-
 private void syncChildren(List<Integer> endpoints) {
     endpoints.each { Integer ep ->
         String dni = "${device.deviceNetworkId}-outlet-${ep}"
@@ -169,7 +163,6 @@ private void syncChildren(List<Integer> endpoints) {
     def currentChildren = getChildDevices() ?: []
     log.info "${device.displayName}: Child sync sees ${currentChildren.size()} child device(s): ${currentChildren.collect { it.deviceNetworkId }}."
 }
-
 void on() { allOn() }
 void off() { allOff() }
 
@@ -178,14 +171,12 @@ void allOff() { outletEndpoints().each { invokeOutlet(it, 0x00) } }
 void onOutlet(def number) { withOutlet(number) { ep -> invokeOutlet(ep, 0x01) } }
 void offOutlet(def number) { withOutlet(number) { ep -> invokeOutlet(ep, 0x00) } }
 void toggleOutlet(def number) { withOutlet(number) { ep -> invokeOutlet(ep, 0x02) } }
-
 void setOutletName(def number, String name) {
     Integer index = parseEndpoint(number)
     def child = childByOutletNumber(index)
     if (!child || !name?.trim()) return
     child.setLabel(name.trim())
 }
-
 private void withOutlet(def number, Closure action) {
     Integer n = parseEndpoint(number)
     List<Integer> eps = outletEndpoints()
@@ -199,7 +190,6 @@ private void withOutlet(def number, Closure action) {
 private def childByOutletNumber(Integer number) {
     getChildDevices().find { it.getDataValue("outletNumber") == number?.toString() }
 }
-
 private def childByMeterEndpoint(Integer endpoint) {
     getChildDevices().find { it.getDataValue("meterEndpoint") == endpoint?.toString() }
 }
@@ -208,13 +198,11 @@ private List<Integer> outletEndpoints() {
     List<Integer> eps = parseEndpointList(settings.endpointList)
     return eps ?: (1..maxOutlets()).toList()
 }
-
 private void invokeOutlet(Integer endpoint, Integer commandId) {
     String cmd = matter.invoke(endpoint, onOffCluster(), commandId)
     sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
     if (logEnable) log.debug "Outlet endpoint ${endpoint}: Matter OnOff command ${commandId}"
 }
-
 void refresh() {
     List<Map<String, String>> paths = []
     List<Integer> outlets = outletEndpoints()
@@ -228,36 +216,26 @@ void refresh() {
     }
     if (paths) sendHubCommand(new hubitat.device.HubAction(matter.readAttributes(paths), hubitat.device.Protocol.MATTER))
 }
-
 private void subscribeToReports() {
     String unsubscribeCommand = matter.unsubscribe()
     if (unsubscribeCommand) {
         sendHubCommand(new hubitat.device.HubAction(unsubscribeCommand, hubitat.device.Protocol.MATTER))
     }
     unschedule("establishSubscriptions")
-    runIn(2, "establishSubscriptions", [overwrite: true])
+    // Allow Matter to clear the old subscription before creating the next one.
+    runIn(5, "establishSubscriptions", [overwrite: true])
 }
-
 void establishSubscriptions() {
-    List<Map<String, String>> paths = []
-    List<Integer> outlets = outletEndpoints()
-    outlets.each { Integer ep ->
-        Integer meterEp = meterEndpointFor(ep, outlets)
-        paths << matter.attributePath(ep, onOffCluster(), 0x0000)
-        paths << matter.attributePath(meterEp, powerCluster(), 0x0008)
-        paths << matter.attributePath(meterEp, powerCluster(), 0x000B)
-        paths << matter.attributePath(meterEp, powerCluster(), 0x000C)
-        paths << matter.attributePath(meterEp, energyCluster(), 0x0001)
-    }
-    if (paths) {
-        String subscribeCommand = matter.subscribe(30, 300, paths)
-        sendHubCommand(new hubitat.device.HubAction(subscribeCommand, hubitat.device.Protocol.MATTER))
-    }
-    if (logEnable) {
-        log.debug "Subscribed to ${outlets.size()} switch attributes and ${outlets.size() * 4} metering attributes in one Matter subscription."
-    }
+    // Three wildcard paths, one Matter subscription. Limit reports to relevant attributes.
+    List<Map<String, String>> paths = [
+        matter.attributePath(0xFFFF, onOffCluster(), 0x0000),
+        matter.attributePath(0xFFFF, powerCluster(), 0x0008),
+        matter.attributePath(0xFFFF, energyCluster(), 0x0001)
+    ]
+    String subscribeCommand = matter.subscribe(30, 300, paths)
+    sendHubCommand(new hubitat.device.HubAction(subscribeCommand, hubitat.device.Protocol.MATTER))
+    if (logEnable) log.debug "Matter subscription requested (OnOff/ActivePower/CumulativeEnergyImported, wildcard endpoints)."
 }
-
 void parse(String description) {
     Map msg = matter.parseDescriptionAsMap(description)
     if (!msg) return
@@ -292,7 +270,6 @@ void parse(String description) {
         updateAggregateEnergy()
     }
 }
-
 private Boolean truthValue(def value) {
     if (value instanceof Boolean) return value
     if (value instanceof Number) return value.intValue() != 0
@@ -303,7 +280,6 @@ private Boolean truthValue(def value) {
     if (!(v ==~ /[0-9a-f]+/)) return null
     return Integer.parseInt(v, 16) != 0
 }
-
 private BigDecimal numericMatterValue(def value) {
     if (value instanceof Number) return new BigDecimal(value.toString())
     if (value instanceof Map) {
@@ -319,7 +295,6 @@ private BigDecimal numericMatterValue(def value) {
     // Matter reports are hexadecimal strings even when every character is a decimal digit.
     return new BigInteger(hex, 16) as BigDecimal
 }
-
 private BigDecimal energyKwh(def value) {
     if (value instanceof Map) {
         def candidate = value.energy ?: value.CumulativeEnergyImported ?: value.value ?: value[0] ?: value["0"]
@@ -358,7 +333,6 @@ private BigDecimal energyKwh(def value) {
     if (logEnable) log.warn "Could not decode Matter cumulative energy value: ${value}"
     return null
 }
-
 private void updateAggregateSwitch() {
     List vals = getChildDevices().collect { it.currentValue("switch") }.findAll { it in ["on", "off"] }
     if (vals) sendEvent(name: "switch", value: vals.contains("on") ? "on" : "off")
@@ -379,12 +353,10 @@ private void updateAggregateCurrent() {
     List vals = getChildDevices().collect { it.currentValue("amperage") }.findAll { it != null }
     if (vals) sendEvent(name: "amperage", value: vals.collect { it as BigDecimal }.sum().setScale(3, BigDecimal.ROUND_HALF_UP), unit: "A")
 }
-
 void componentOn(def child) { Integer ep = parseEndpoint(child.getDataValue("endpoint")); if (ep != null) invokeOutlet(ep, 0x01) }
 void componentOff(def child) { Integer ep = parseEndpoint(child.getDataValue("endpoint")); if (ep != null) invokeOutlet(ep, 0x00) }
 void componentRefresh(def child) { Integer ep = parseEndpoint(child.getDataValue("endpoint")); if (ep != null) readEndpoint(ep) }
 void componentInitialize(def child) { componentRefresh(child) }
-
 private void readEndpoint(Integer ep) {
     def child = getChildDevice("${device.deviceNetworkId}-outlet-${ep}")
     Integer meterEp = parseEndpoint(child?.getDataValue("meterEndpoint")) ?: (ep + 6)
@@ -397,4 +369,3 @@ private void readEndpoint(Integer ep) {
     ]
     sendHubCommand(new hubitat.device.HubAction(matter.readAttributes(paths), hubitat.device.Protocol.MATTER))
 }
-
